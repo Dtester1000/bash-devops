@@ -24,7 +24,6 @@ rm -f README.md || error_exit "Failed to remove README.md file."
 
 # 3. Build Docker images
 echo "Building Docker images..."
-# Assuming you have Dockerfiles in server/ and public/ directories
 docker build -t chat-server ./server || error_exit "Failed to build chat-server image."
 docker build -t chat-public ./public || error_exit "Failed to build chat-public image."
 
@@ -42,6 +41,17 @@ docker pull mongo:latest || error_exit "Failed to pull mongo image."
 
 # 5. Deploy to Kubernetes
 echo "Deploying to Kubernetes..."
+
+# Deploy NGINX Ingress Controller (if not already present)
+echo "Setting up NGINX Ingress Controller..."
+kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.8.1/deploy/static/provider/cloud/deploy.yaml
+
+# Wait for the Ingress Controller to be ready
+echo "Waiting for NGINX Ingress Controller to be ready..."
+kubectl wait --namespace ingress-nginx \
+  --for=condition=ready pod \
+  --selector=app.kubernetes.io/component=controller \
+  --timeout=90s
 
 # Define Kubernetes Deployment and Service for MongoDB
 cat <<EOF | kubectl apply -f -
@@ -95,24 +105,24 @@ spec:
       containers:
       - name: chat-server
         image: docker.io/chat-server:latest
-        imagePullPolicy: IfNotPresent # Added imagePullPolicy
+        imagePullPolicy: IfNotPresent
         ports:
-        - containerPort: 3000 # Or whichever port your server uses
+        - containerPort: 3000
         env:
         - name: MONGODB_URI
-          value: "mongodb://mongodb-service:27017/chatdb" # Ensure this matches your server's expected env var
+          value: "mongodb://mongodb-service:27017/chatdb"
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: chat-server-service
 spec:
-  type: LoadBalancer # Use NodePort if LoadBalancer is not supported
+  type: ClusterIP  
   selector:
     app: chat-server
   ports:
     - protocol: TCP
-      port: 3000 # Expose server port
+      port: 3000
       targetPort: 3000
 EOF
 
@@ -134,23 +144,53 @@ spec:
       containers:
       - name: chat-public
         image: docker.io/chat-public:latest
-        imagePullPolicy: IfNotPresent # Added imagePullPolicy
+        imagePullPolicy: IfNotPresent
         ports:
-        - containerPort: 80 # Or whichever port your public app uses
+        - containerPort: 80
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: chat-public-service
 spec:
-  type: LoadBalancer # Use NodePort if LoadBalancer is not supported
+  type: ClusterIP
   selector:
     app: chat-public
   ports:
     - protocol: TCP
-      port: 80 # Expose public app port
+      port: 80
       targetPort: 80
 EOF
 
+echo "Configuring Ingress..."
 
+cat <<EOF | kubectl apply -f -
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: chat-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  ingressClassName: nginx
+  rules:
+  - http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: chat-public-service
+            port:
+              number: 80
+      - path: /api
+        pathType: Prefix
+        backend:
+          service:
+            name: chat-server-service
+            port:
+              number: 3000
+EOF
+
+sleep 15
 echo "Application deployed to Kubernetes. Check the services to access them."
