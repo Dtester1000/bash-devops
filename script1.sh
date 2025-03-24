@@ -6,7 +6,7 @@ set -e
 REPO_URL="https://github.com/Dtester1000/chat-clone.git"
 REPO_DIR="chat-clone"
 
-# Function to check if an image exists and pull it if it doesn't
+# Function to check if an image exists / pull it if it doesn't
 check_and_pull_image() {
     if ! docker image inspect "$1" &> /dev/null; then
         echo "Pulling $1 image..."
@@ -20,7 +20,7 @@ check_and_pull_image() {
 check_and_pull_image "mongo:latest"
 check_and_pull_image "sonarqube:latest"
 
-# Clone the repository without authentication
+# Clone the repository
 if [ ! -d "$REPO_DIR" ]; then
     echo "Cloning repository..."
     sudo git clone "$REPO_URL" || { echo "Failed to clone repository."; exit 1; }
@@ -172,6 +172,25 @@ spec:
     - protocol: TCP
       port: 3000
       targetPort: 3000
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: frontend-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  rules:
+  - http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: chat-frontend
+            port:
+              number: 3000
+
 EOF
 
 # SonarQube
@@ -208,18 +227,23 @@ spec:
       targetPort: 9000
 EOF
 
-# Wait for pods to be ready
-echo "Waiting for pods to be ready..."
+# Wait for pods to start
+echo "The pods are getting ready..."
 kubectl wait --for=condition=Ready pod -l app=mongodb --timeout=120s
 kubectl wait --for=condition=Ready pod -l app=chat-backend --timeout=120s
 kubectl wait --for=condition=Ready pod -l app=chat-frontend --timeout=120s
 kubectl wait --for=condition=Ready pod -l app=sonarqube --timeout=120s
 
+
 # Get frontend URL
 FRONTEND_URL=$(minikube service chat-frontend --url)
 echo "Frontend URL: $FRONTEND_URL"
 
-# Test frontend
+# Test frontend via ingress
+echo "Getting Ingress IP address..."
+sleep 15  
+MINIKUBE_IP=$(minikube ip)
+FRONTEND_URL="http://$MINIKUBE_IP"
 echo "Testing frontend availability..."
 STATUS_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$FRONTEND_URL")
 
@@ -242,5 +266,7 @@ if [ "$STATUS_CODE" -eq "200" ]; then
 else
   echo "Backend is not accessible. HTTP Status: $STATUS_CODE"
 fi
+
+
 
 echo "Setup complete. Please check the individual services for any specific errors."
