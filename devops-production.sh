@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 
+# Enhanced Kubernetes Deployment Script for chat-clone
+# Features: Error handling, idempotency, configuration management, and best practices
+
 set -o errexit          # Exit on any error
 set -o nounset          # Exit on undefined variables
 set -o pipefail         # Fail pipelines if any command fails
@@ -34,9 +37,13 @@ log_error() {
   exit 1
 }
 
+log_debug() {
+  printf "${BLUE}[DEBUG]${NC} %s\n" "$1"
+}
+
 # Check prerequisites
 check_prerequisites() {
-  local tools=("git" "docker" "kubectl")
+  local tools=("git" "docker" "kubectl" "curl" "jq")
   local missing=()
   
   for tool in "${tools[@]}"; do
@@ -75,7 +82,14 @@ cleanup() {
   if [[ -d "$PROJECT_NAME" ]]; then
     rm -rf "$PROJECT_NAME"
   fi
+
+   # Kill SonarQube port-forward if running
+  if [[ -n "$SONARQUBE_PF_PID" ]]; then
+    kill "$SONARQUBE_PF_PID" 2>/dev/null || true
+  fi
 }
+
+
 
 # Setup namespace
 setup_namespace() {
@@ -113,6 +127,123 @@ build_and_push_images() {
     log_info "Pushing $image_name to registry..."
     docker push "$image_tag" || log_error "Failed to push $image_name image"
   done
+}
+
+# Install SonarQube in Kubernetes
+install_sonarqube() {
+  log_info "Setting up SonarQube for code quality analysis..."
+  
+  # Create namespace if it doesn't exist
+  if ! kubectl get namespace "$SONARQUBE_NAMESPACE" >/dev/null 2>&1; then
+    kubectl create namespace "$SONARQUBE_NAMESPACE"
+  fi
+
+  # Add SonarQube Helm repo if not already added
+  if ! helm repo list | grep -q sonarqube; then
+    helm repo add sonarqube https://SonarSource.github.io/helm-chart-sonarqube
+    helm repo update
+  fi
+
+  # Install SonarQube
+  helm upgrade --install -n "$SONARQUBE_NAMESPACE" sonarqube sonarqube/sonarqube \
+    --set service.type=ClusterIP \
+    --set persistence.enabled=true \
+    --set persistence.size=5Gi \
+    --set postgresql.persistence.size=5Gi \
+    --wait
+
+  # Wait for SonarQube to be ready
+  log_info "Waiting for SonarQube to be ready..."
+  kubectl wait --namespace "$SONARQUBE_NAMESPACE" \
+    --for=condition=ready pod \
+    --selector=app=sonarqube \
+    --timeout=${TIMEOUT}s
+
+  # Port-forward to access SonarQube (background process)
+  kubectl port-forward -n "$SONARQUBE_NAMESPACE" svc/sonarqube-sonarqube 9000:9000 &
+  SONARQUBE_PF_PID=$!
+  sleep 5
+
+  # Change default admin password
+  log_info "Updating SonarQube admin password..."
+  curl -u "$SONARQUBE_USER:admin" -X POST "http://localhost:9000/api/users/change_password" \
+    --data-urlencode "login=$SONARQUBE_USER" \
+    --data-urlencode "password=$SONARQUBE_PASSWORD" \
+    --data-urlencode "previousPassword=admin" || log_warn "Password change may have failed"
+}
+
+# Run SonarQube analysis
+run_sonarqube_analysis() {
+  log_info "Running SonarQube code analysis..."
+  
+  # Check if we're in the project directory
+  if [[ ! -d "$PROJECT_NAME" ]]; then
+    log_error "Project directory not found. Run prepare_repository first."
+  fi
+
+  cd "$PROJECT_NAME" || log_error "Failed to enter project directory"
+
+  # Check for sonar-project.properties, create if doesn't exist
+  if [[ ! -f "sonar-project.properties" ]]; then
+    log_info "Creating sonar-project.properties file..."
+    cat > sonar-project.properties <<EOF
+sonar.projectKey=chat-clone
+sonar.projectName=Chat Clone Application
+sonar.projectVersion=1.0
+sonar.sources=.
+sonar.sourceEncoding=UTF-8
+sonar.host.url=http://localhost:9000
+sonar.login=$SONARQUBE_USER
+sonar.password=$SONARQUBE_PASSWORD
+sonar.exclusions=**/node_modules/**,**/dist/**,**/coverage/**,**/test/**,**/tests/**
+EOF
+  fi
+
+  # Run SonarScanner (assuming it's installed)
+  if command -v sonar-scanner >/dev/null 2>&1; then
+    sonar-scanner \
+      -Dsonar.projectKey=chat-clone \
+      -Dsonar.sources=. \
+      -Dsonar.host.url=http://localhost:9000 \
+      -Dsonar.login="$SONARQUBE_USER" \
+      -Dsonar.password="$SONARQUBE_PASSWORD" || log_warn "SonarQube analysis encountered issues"
+  else
+    log_warn "sonar-scanner not found. Skipping code analysis."
+    return 0
+  fi
+
+  # Wait for analysis to complete and get quality gate status
+  local project_status
+  project_status=$(curl -s -u "$SONARQUBE_USER:$SONARQUBE_PASSWORD" \
+    "http://localhost:9000/api/qualitygates/project_status?projectKey=chat-clone" | \
+    jq -r '.projectStatus.status')
+
+  if [[ "$project_status" == "OK" ]]; then
+    log_info "SonarQube Quality Gate PASSED"
+  else
+    log_error "SonarQube Quality Gate FAILED. Status: $project_status"
+  fi
+}
+
+# Run tests
+run_tests() {
+  log_info "Running application tests..."
+  
+  cd "$PROJECT_NAME" || log_error "Failed to enter project directory"
+
+  # Check for test scripts and run them
+  if [[ -f "package.json" ]]; then
+    log_info "Running npm tests..."
+    npm install && npm test || log_error "Tests failed"
+  elif [[ -f "pom.xml" ]]; then
+    log_info "Running maven tests..."
+    mvn test || log_error "Tests failed"
+  elif [[ -f "build.gradle" ]]; then
+    log_info "Running gradle tests..."
+    ./gradlew test || log_error "Tests failed"
+  else
+    log_warn "No recognized test configuration found. Skipping tests."
+  fi
 }
 
 # Setup MongoDB
@@ -361,8 +492,9 @@ metadata:
   name: chat-ingress
   annotations:
     nginx.ingress.kubernetes.io/rewrite-target: /
-    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
-    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m" # Limits the buffer to 10MB.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60s" # Timeout for slow clients
+    nginx.ingress.kubernetes.io/enable-cors: "true" # Enables cors for cross origin requests
     nginx.ingress.kubernetes.io/cors-allow-methods: "PUT, GET, POST, OPTIONS"
     nginx.ingress.kubernetes.io/cors-allow-origin: "*"
 spec:
@@ -407,12 +539,16 @@ verify_deployment() {
   log_error "Deployment verification timed out. Some pods are not running."
 }
 
-# Main execution
 main() {
   check_prerequisites
   cleanup
   setup_namespace
   prepare_repository
+
+  install_sonarqube
+  run_tests
+  run_sonarqube_analysis
+
   build_and_push_images
   setup_mongodb
   deploy_services
@@ -422,6 +558,7 @@ main() {
   log_info "Deployment completed successfully!"
   log_info "You can access the application at http://localhost"
   log_info "API is available at http://localhost/api"
+  log_info "SonarQube dashboard: http://localhost:9000 (admin/$SONARQUBE_PASSWORD)"
 }
 
 main "$@"
