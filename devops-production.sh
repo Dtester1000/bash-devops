@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 
-# Enhanced Kubernetes Deployment Script for chat-clone
 # Features: Error handling, idempotency, configuration management, and best practices
 
 set -o errexit          # Exit on any error
@@ -67,7 +66,7 @@ check_prerequisites() {
   fi
 }
 
-# Cleanup function for idempotency
+# Cleanup function
 cleanup() {
   log_info "Cleaning up previous deployment..."
   
@@ -539,26 +538,83 @@ verify_deployment() {
   log_error "Deployment verification timed out. Some pods are not running."
 }
 
-main() {
-  check_prerequisites
-  cleanup
-  setup_namespace
-  prepare_repository
-
-  install_sonarqube
-  run_tests
-  run_sonarqube_analysis
-
-  build_and_push_images
-  setup_mongodb
-  deploy_services
-  setup_ingress
-  verify_deployment
-  
-  log_info "Deployment completed successfully!"
-  log_info "You can access the application at http://localhost"
-  log_info "API is available at http://localhost/api"
-  log_info "SonarQube dashboard: http://localhost:9000 (admin/$SONARQUBE_PASSWORD)"
+# --- Menu Functions ---
+show_main_menu() {
+  clear
+  echo -e "${GREEN}Kubernetes Deployment Manager${NC}"
+  echo -e "${BLUE}============================${NC}"
+  echo "1. Install Prerequisites"
+  echo "2. Clone/Pull Repository"
+  echo "3. Install SonarQube"
+  echo "4. Run Tests"
+  echo "5. Run SonarQube Analysis"
+  echo "6. Deploy Application"
+  echo "7. Cleanup Resources"
+  echo "8. Exit"
+  echo -e "${BLUE}============================${NC}"
 }
 
+press_any_key() {
+  read -n 1 -s -r -p "Press any key to continue..."
+  echo
+}
+
+process_menu_choice() {
+  local choice
+  read -p "Enter your choice [1-8]: " choice
+  case $choice in
+    1) 
+      check_prerequisites
+      press_any_key
+      ;;
+    2) 
+      clone_repository
+      press_any_key
+      ;;
+    3) 
+      install_sonarqube
+      press_any_key
+      ;;
+    4) 
+      run_tests
+      press_any_key
+      ;;
+    5) 
+      run_sonarqube_analysis
+      press_any_key
+      ;;
+    6) 
+      deploy_application
+      press_any_key
+      ;;
+    7) 
+      cleanup
+      press_any_key
+      ;;
+    8) 
+      log_info "Exiting..."
+      exit 0
+      ;;
+    *) 
+      log_error "Invalid option"
+      press_any_key
+      ;;
+  esac
+}
+
+# --- Main Execution ---
+main() {
+  # Check basic prerequisites at startup
+  if ! command -v kubectl &> /dev/null || ! command -v docker &> /dev/null; then
+    log_warn "Some tools are missing. Run 'Install Prerequisites' first."
+  fi
+
+  # Interactive menu loop
+  while true; do
+    show_main_menu
+    process_menu_choice
+  done
+}
+
+# Start the script
 main "$@"
