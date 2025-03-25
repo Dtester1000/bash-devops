@@ -1,7 +1,5 @@
 #!/bin/bash
 
-# Script to deploy chat-clone to a local Kubernetes cluster using Docker Desktop
-
 # Project URL
 PROJECT_URL="https://github.com/Dtester1000/chat-clone.git"
 PROJECT_NAME="chat-clone"
@@ -27,7 +25,7 @@ echo "Building Docker images..."
 docker build -t chat-server ./server || error_exit "Failed to build chat-server image."
 docker build -t chat-public ./public || error_exit "Failed to build chat-public image."
 
-# Tag the images for Kubernetes (using docker.io)
+# Tag the images for Kubernetes
 docker tag chat-server docker.io/chat-server:latest
 docker tag chat-public docker.io/chat-public:latest
 
@@ -42,7 +40,7 @@ docker pull mongo:latest || error_exit "Failed to pull mongo image."
 # 5. Deploy to Kubernetes
 echo "Deploying to Kubernetes..."
 
-# Deploy NGINX Ingress Controller (if not already present)
+# Deploy NGINX Ingress Controller
 echo "Setting up NGINX Ingress Controller..."
 kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.8.1/deploy/static/provider/cloud/deploy.yaml
 
