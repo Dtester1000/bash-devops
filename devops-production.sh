@@ -21,6 +21,7 @@ readonly RED='\033[0;31m'
 readonly GREEN='\033[0;32m'
 readonly YELLOW='\033[1;33m'
 readonly NC='\033[0m' # No Color
+readonly BLUE='\033[0;34m'
 
 # Logging functions
 log_info() {
@@ -542,15 +543,14 @@ verify_deployment() {
 show_main_menu() {
   clear
   echo -e "${GREEN}Kubernetes Deployment Manager${NC}"
+  log_info "You can access the application at http://localhost"
+  log_info "API is available at http://localhost/api"
+  log_info "SonarQube dashboard: http://localhost:9000 (admin/$SONARQUBE_PASSWORD)"
   echo -e "${BLUE}============================${NC}"
-  echo "1. Install Prerequisites"
-  echo "2. Clone/Pull Repository"
-  echo "3. Install SonarQube"
-  echo "4. Run Tests"
-  echo "5. Run SonarQube Analysis"
-  echo "6. Deploy Application"
-  echo "7. Cleanup Resources"
-  echo "8. Exit"
+  echo "1. Install"
+  echo "2. Run Tests"
+  echo "3. Cleanup Resources"
+  echo "4. Exit"
   echo -e "${BLUE}============================${NC}"
 }
 
@@ -561,37 +561,32 @@ press_any_key() {
 
 process_menu_choice() {
   local choice
-  read -p "Enter your choice [1-8]: " choice
+  read -p "Enter your choice [1-4]: " choice
   case $choice in
     1) 
       check_prerequisites
+      setup_namespace
+      prepare_repository
+      install_sonarqube
+      run_tests
+      run_sonarqube_analysis
+      build_and_push_images
+      setup_mongodb
+      deploy_services
+      setup_ingress
+      verify_deployment
       press_any_key
       ;;
     2) 
-      clone_repository
-      press_any_key
-      ;;
-    3) 
-      install_sonarqube
-      press_any_key
-      ;;
-    4) 
       run_tests
-      press_any_key
-      ;;
-    5) 
       run_sonarqube_analysis
       press_any_key
       ;;
-    6) 
-      deploy_application
-      press_any_key
-      ;;
-    7) 
+    3)
       cleanup
       press_any_key
       ;;
-    8) 
+    4) 
       log_info "Exiting..."
       exit 0
       ;;
@@ -608,7 +603,8 @@ main() {
   if ! command -v kubectl &> /dev/null || ! command -v docker &> /dev/null; then
     log_warn "Some tools are missing. Run 'Install Prerequisites' first."
   fi
-
+  
+  
   # Interactive menu loop
   while true; do
     show_main_menu
